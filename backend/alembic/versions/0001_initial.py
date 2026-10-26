@@ -1,4 +1,4 @@
-﻿"""Initial database schema
+"""Initial database schema
 
 Revision ID: 0001_initial
 Revises: 

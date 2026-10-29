@@ -1,7 +1,7 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 
-const API_BASE = 'http://localhost:8000/api/v1';
+const DEFAULT_API_BASE = (import.meta.env.VITE_API_BASE_URL as string) || 'http://localhost:8000/api/v1';
 
 interface Task {
   id: number;
@@ -21,6 +21,12 @@ interface UserProfile {
 
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem('token') || '');
+  const [apiBase, setApiBase] = useState(() => localStorage.getItem('teamtask_api_base') || DEFAULT_API_BASE);
+  const [showConfig, setShowConfig] = useState(false);
+  const [configUrl, setConfigUrl] = useState(apiBase);
+  const [testStatus, setTestStatus] = useState<string | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -44,17 +50,63 @@ export default function App() {
     setPassword(userPass);
   };
 
+  const handleSaveApiBase = () => {
+    const cleaned = configUrl.trim().replace(/\/+$/, '');
+    setApiBase(cleaned);
+    localStorage.setItem('teamtask_api_base', cleaned);
+    setShowConfig(false);
+    setTestStatus(null);
+  };
+
+  const handleResetApiBase = () => {
+    setConfigUrl(DEFAULT_API_BASE);
+    setApiBase(DEFAULT_API_BASE);
+    localStorage.removeItem('teamtask_api_base');
+    setTestStatus(null);
+  };
+
+  const handleTestConnection = async () => {
+    setTestStatus('Testing...');
+    try {
+      const cleaned = configUrl.trim().replace(/\/+$/, '');
+      const healthUrl = cleaned.endsWith('/api/v1') ? `${cleaned}/health` : `${cleaned}/api/v1/health`;
+      const res = await axios.get(healthUrl, { timeout: 8000 });
+      if (res.data?.status === 'healthy' || res.status === 200) {
+        setTestStatus('✅ Connected successfully!');
+      } else {
+        setTestStatus(`⚠️ Server responded with status: ${res.status}`);
+      }
+    } catch (err: any) {
+      setTestStatus(`❌ Connection failed (${err.message || 'Server unreachable'})`);
+    }
+  };
+
   const login = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsLoggingIn(true);
     try {
       const form = new URLSearchParams();
       form.append('username', email);
       form.append('password', password);
-      const res = await axios.post(`${API_BASE}/auth/login`, form);
+      const res = await axios.post(`${apiBase}/auth/login`, form);
       localStorage.setItem('token', res.data.access_token);
       setToken(res.data.access_token);
-    } catch {
-      alert('Login failed. Please check credentials.');
+    } catch (err: any) {
+      if (err.response) {
+        const detail = err.response.data?.detail;
+        alert(typeof detail === 'string' ? detail : 'Login failed. Please check credentials.');
+      } else if (err.request) {
+        alert(
+          `Cannot connect to backend server at:\n${apiBase}\n\n` +
+          `• If using Render free tier, the backend may be waking up (please wait ~30 seconds and retry).\n` +
+          `• If the backend is hosted at another URL, click "Configure Backend Server" below to enter it.`
+        );
+        setShowConfig(true);
+      } else {
+        alert(`Login error: ${err.message}`);
+      }
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -73,8 +125,8 @@ export default function App() {
       const config = { headers: { Authorization: `Bearer ${token}` } };
       
       const [userRes, sRes] = await Promise.all([
-        axios.get(`${API_BASE}/auth/me`, config),
-        axios.get(`${API_BASE}/dashboard/summary`, config),
+        axios.get(`${apiBase}/auth/me`, config),
+        axios.get(`${apiBase}/dashboard/summary`, config),
       ]);
       setCurrentUser(userRes.data);
       setSummary(sRes.data);
@@ -84,10 +136,13 @@ export default function App() {
       if (statusFilter) params.append('status', statusFilter);
       if (priorityFilter) params.append('priority', priorityFilter);
 
-      const tRes = await axios.get(`${API_BASE}/tasks?${params.toString()}`, config);
+      const tRes = await axios.get(`${apiBase}/tasks?${params.toString()}`, config);
       setTasks(tRes.data);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      if (err.response?.status === 401) {
+        logout();
+      }
     }
   };
 
@@ -96,7 +151,7 @@ export default function App() {
     if (!title.trim()) return;
     try {
       await axios.post(
-        `${API_BASE}/tasks`,
+        `${apiBase}/tasks`,
         { title, description, priority },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -112,7 +167,7 @@ export default function App() {
   const updateStatus = async (taskId: number, newStatus: string) => {
     try {
       await axios.patch(
-        `${API_BASE}/tasks/${taskId}`,
+        `${apiBase}/tasks/${taskId}`,
         { status: newStatus },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -125,7 +180,7 @@ export default function App() {
   const deleteTask = async (taskId: number) => {
     if (!window.confirm(`Are you sure you want to delete task #${taskId}?`)) return;
     try {
-      await axios.delete(`${API_BASE}/tasks/${taskId}`, {
+      await axios.delete(`${apiBase}/tasks/${taskId}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       loadData();
@@ -136,11 +191,11 @@ export default function App() {
 
   useEffect(() => {
     loadData();
-  }, [token, statusFilter, priorityFilter, search]);
+  }, [token, statusFilter, priorityFilter, search, apiBase]);
 
   if (!token) {
     return (
-      <div style={{ maxWidth: '440px', margin: '60px auto', padding: '32px', background: '#fff', borderRadius: '16px', boxShadow: '0 10px 25px rgba(0,0,0,0.08)', fontFamily: 'system-ui, sans-serif' }}>
+      <div style={{ maxWidth: '460px', margin: '50px auto', padding: '32px', background: '#fff', borderRadius: '16px', boxShadow: '0 10px 25px rgba(0,0,0,0.08)', fontFamily: 'system-ui, sans-serif' }}>
         <div style={{ textAlign: 'center', marginBottom: '24px' }}>
           <div style={{ width: '48px', height: '48px', margin: '0 auto 12px', borderRadius: '12px', background: '#4f46e5', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: '24px' }}>
             ❖
@@ -238,10 +293,90 @@ export default function App() {
               required
             />
           </div>
-          <button style={{ width: '100%', padding: '12px', background: '#4f46e5', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 700, fontSize: '14px' }} type="submit">
-            Sign In
+          <button
+            style={{
+              width: '100%',
+              padding: '12px',
+              background: isLoggingIn ? '#6366f1' : '#4f46e5',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '8px',
+              cursor: isLoggingIn ? 'not-allowed' : 'pointer',
+              fontWeight: 700,
+              fontSize: '14px'
+            }}
+            type="submit"
+            disabled={isLoggingIn}
+          >
+            {isLoggingIn ? 'Signing In...' : 'Sign In'}
           </button>
         </form>
+
+        {/* Backend Server Configuration Toggle */}
+        <div style={{ marginTop: '20px', borderTop: '1px solid #f1f5f9', paddingTop: '14px', textAlign: 'center' }}>
+          <button
+            type="button"
+            onClick={() => setShowConfig(!showConfig)}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#6366f1',
+              cursor: 'pointer',
+              fontSize: '12px',
+              fontWeight: 600,
+              textDecoration: 'underline'
+            }}
+          >
+            ⚙ Configure Backend Server URL
+          </button>
+          <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px', wordBreak: 'break-all' }}>
+            Target: <code>{apiBase}</code>
+          </div>
+
+          {showConfig && (
+            <div style={{ marginTop: '12px', background: '#f8fafc', padding: '12px', borderRadius: '8px', border: '1px solid #e2e8f0', textAlign: 'left' }}>
+              <label style={{ fontSize: '12px', fontWeight: 600, color: '#334155' }}>
+                Backend API Base URL:
+              </label>
+              <input
+                type="text"
+                value={configUrl}
+                onChange={e => setConfigUrl(e.target.value)}
+                placeholder="e.g. https://your-backend.onrender.com/api/v1"
+                style={{ width: '100%', padding: '8px 10px', marginTop: '6px', boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '12px' }}
+              />
+              <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                <button
+                  type="button"
+                  onClick={handleSaveApiBase}
+                  style={{ flex: 1, padding: '6px', background: '#4f46e5', color: '#fff', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}
+                >
+                  Save & Apply
+                </button>
+                <button
+                  type="button"
+                  onClick={handleTestConnection}
+                  style={{ flex: 1, padding: '6px', background: '#e2e8f0', color: '#1e293b', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}
+                >
+                  Test Connection
+                </button>
+                <button
+                  type="button"
+                  onClick={handleResetApiBase}
+                  style={{ padding: '6px 10px', background: '#f1f5f9', color: '#64748b', border: 'none', borderRadius: '6px', fontSize: '12px', cursor: 'pointer' }}
+                  title="Reset to default URL"
+                >
+                  Reset
+                </button>
+              </div>
+              {testStatus && (
+                <div style={{ marginTop: '8px', fontSize: '11px', fontWeight: 600, color: testStatus.startsWith('✅') ? '#059669' : '#dc2626' }}>
+                  {testStatus}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     );
   }
@@ -298,78 +433,83 @@ export default function App() {
               <span style={{ fontSize: '11px', fontWeight: 700, color: card.text }}>{card.label}</span>
               <span style={{ fontSize: '14px', color: card.text, opacity: 0.8 }}>{card.icon}</span>
             </div>
-            <div style={{ fontSize: '28px', fontWeight: 800, color: card.text, margin: '8px 0' }}>{card.count}</div>
-            <div style={{ fontSize: '11px', color: '#6b7280' }}>{card.sub}</div>
+            <div style={{ fontSize: '28px', fontWeight: 800, color: '#111827', margin: '10px 0 4px' }}>
+              {card.count}
+            </div>
+            <div style={{ fontSize: '12px', color: '#6b7280' }}>{card.sub}</div>
           </div>
         ))}
       </div>
 
-      {/* Sprint Velocity */}
-      <div style={{ background: '#fff', padding: '18px 24px', borderRadius: '10px', border: '1px solid #e5e7eb', marginBottom: '24px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+      {/* Sprint Progress Section */}
+      <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '20px', marginBottom: '24px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
           <div>
-            <span style={{ fontWeight: 700, fontSize: '15px' }}>Sprint Velocity & Completion Rate</span>
-            <span style={{ fontSize: '13px', color: '#6b7280', marginLeft: '12px' }}>{summary.completed_tasks || 0} of {summary.total_tasks || 0} total work items completed</span>
+            <div style={{ fontWeight: 700, fontSize: '15px' }}>Sprint Velocity & Completion</div>
+            <div style={{ fontSize: '12px', color: '#6b7280' }}>
+              Formula: (Completed Work Items / Total Registered Items) × 100%
+            </div>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ fontWeight: 800, fontSize: '18px', color: '#059669' }}>{completionPercent}%</span>
-            <span style={{ fontSize: '12px', background: '#ecfdf5', color: '#059669', padding: '2px 8px', borderRadius: '10px', fontWeight: 600 }}>In Progress</span>
+          <div style={{ fontSize: '18px', fontWeight: 800, color: '#4f46e5' }}>
+            {completionPercent}%
           </div>
         </div>
-        <div style={{ width: '100%', height: '8px', background: '#f3f4f6', borderRadius: '4px', overflow: 'hidden' }}>
-          <div style={{ width: `${completionPercent}%`, height: '100%', background: '#059669', transition: 'width 0.4s ease' }} />
+        <div style={{ width: '100%', height: '10px', background: '#e5e7eb', borderRadius: '5px', overflow: 'hidden' }}>
+          <div style={{ width: `${completionPercent}%`, height: '100%', background: '#4f46e5', transition: 'width 0.3s ease' }} />
         </div>
       </div>
 
       {/* Add New Work Item Box - Rendered ONLY for Admin and Manager */}
       {isAdminOrManager && (
-        <div style={{ background: '#fff', border: '1px solid #e5e7eb', padding: '20px', borderRadius: '10px', marginBottom: '24px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
-            <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 700 }}>Add New Work Item</h3>
-            <span style={{ background: '#e0e7ff', color: '#4f46e5', fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: '10px' }}>FAST DISPATCH</span>
+        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', padding: '20px', marginBottom: '24px' }}>
+          <div style={{ fontWeight: 700, fontSize: '15px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span>➕</span> Create New Work Item
           </div>
-          <form onSubmit={createTask} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+          <form onSubmit={createTask} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px' }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '6px' }}>TITLE *</label>
               <input
-                style={{ flex: '3 1 300px', padding: '10px 14px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '14px' }}
-                placeholder="Task title (e.g. Implement OAuth2 Refresh Token)..."
+                style={{ width: '100%', padding: '8px 12px', boxSizing: 'border-box', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '13px' }}
+                placeholder="e.g. Implement OAuth2 Refresh Flow"
                 value={title}
                 onChange={e => setTitle(e.target.value)}
                 required
               />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '6px' }}>DESCRIPTION</label>
+              <input
+                style={{ width: '100%', padding: '8px 12px', boxSizing: 'border-box', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '13px' }}
+                placeholder="e.g. RFC 6749 compliance checks"
+                value={description}
+                onChange={e => setDescription(e.target.value)}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '6px' }}>PRIORITY</label>
               <select
-                style={{
-                  flex: '1 1 160px',
-                  padding: '10px 14px',
-                  border: '1px solid #fcd34d',
-                  borderRadius: '6px',
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  background: priority === 'High' ? '#fee2e2' : priority === 'Medium' ? '#fef3c7' : '#f1f5f9',
-                  color: priority === 'High' ? '#b91c1c' : priority === 'Medium' ? '#b45309' : '#475569'
-                }}
+                style={{ width: '100%', padding: '8px 12px', boxSizing: 'border-box', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '13px' }}
                 value={priority}
-                onChange={(e: any) => setPriority(e.target.value)}
+                onChange={e => setPriority(e.target.value as any)}
               >
-                <option value="Low">Low Priority</option>
-                <option value="Medium">Medium Priority</option>
-                <option value="High">High Priority</option>
+                <option value="Low">Low</option>
+                <option value="Medium">Medium</option>
+                <option value="High">High</option>
               </select>
-              <button style={{ padding: '10px 24px', background: '#4338ca', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 600, fontSize: '14px' }} type="submit">
-                + Create Item
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+              <button
+                type="submit"
+                style={{ width: '100%', padding: '9px', background: '#4f46e5', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
+              >
+                Publish Work Item
               </button>
             </div>
-            <input
-              style={{ padding: '10px 14px', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '13px' }}
-              placeholder="Optional description / work item details..."
-              value={description}
-              onChange={e => setDescription(e.target.value)}
-            />
           </form>
         </div>
       )}
 
-      {/* Filter Tabs & Search */}
+      {/* Filter and Search Bar */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
         <div style={{ display: 'flex', gap: '8px' }}>
           {[
@@ -377,10 +517,10 @@ export default function App() {
             { label: 'To Do', count: summary.open_tasks || 0, val: 'To Do' },
             { label: 'In Progress', count: summary.in_progress_tasks || 0, val: 'In Progress' },
             { label: 'Done', count: summary.completed_tasks || 0, val: 'Done' },
-          ].map(tab => (
+          ].map(f => (
             <button
-              key={tab.label}
-              onClick={() => setStatusFilter(tab.val)}
+              key={f.label}
+              onClick={() => setStatusFilter(f.val)}
               style={{
                 padding: '6px 14px',
                 borderRadius: '16px',
@@ -391,18 +531,13 @@ export default function App() {
                 display: 'flex',
                 alignItems: 'center',
                 gap: '6px',
-                background: statusFilter === tab.val ? '#4338ca' : '#f3f4f6',
-                color: statusFilter === tab.val ? '#fff' : '#4b5563',
+                background: statusFilter === f.val ? '#4338ca' : '#f3f4f6',
+                color: statusFilter === f.val ? '#fff' : '#4b5563'
               }}
             >
-              <span>{tab.label}</span>
-              <span style={{
-                background: statusFilter === tab.val ? 'rgba(255,255,255,0.25)' : '#e5e7eb',
-                padding: '1px 6px',
-                borderRadius: '10px',
-                fontSize: '11px'
-              }}>
-                {tab.count}
+              <span>{f.label}</span>
+              <span style={{ background: statusFilter === f.val ? 'rgba(255,255,255,0.25)' : '#e5e7eb', padding: '1px 6px', borderRadius: '10px', fontSize: '11px' }}>
+                {f.count}
               </span>
             </button>
           ))}
@@ -427,14 +562,20 @@ export default function App() {
         </div>
       </div>
 
-      {/* Table */}
+      {/* Task List Table */}
       <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: '10px', overflowX: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid #e5e7eb' }}>
-          <div style={{ fontWeight: 700, fontSize: '15px' }}>Active Work Items <span style={{ color: '#6b7280', fontSize: '13px', fontWeight: 500 }}>({tasks.length})</span></div>
-          <button onClick={loadData} style={{ padding: '6px 12px', border: '1px solid #d1d5db', background: '#fff', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <div style={{ fontWeight: 700, fontSize: '15px' }}>
+            Active Work Items <span style={{ color: '#6b7280', fontSize: '13px', fontWeight: 500 }}>({tasks.length})</span>
+          </div>
+          <button
+            onClick={loadData}
+            style={{ padding: '6px 12px', border: '1px solid #d1d5db', background: '#fff', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}
+          >
             ↻ Refresh
           </button>
         </div>
+
         <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', minWidth: '700px' }}>
           <thead>
             <tr style={{ background: '#f9fafb', borderBottom: '1px solid #e5e7eb', fontSize: '12px', color: '#6b7280', textTransform: 'uppercase' }}>
@@ -443,13 +584,13 @@ export default function App() {
               <th style={{ padding: '12px 20px' }}>STATUS</th>
               <th style={{ padding: '12px 20px' }}>PRIORITY</th>
               <th style={{ padding: '12px 20px' }}>CREATED</th>
-              <th style={{ padding: '12px 20px' }}>ACTIONS</th>
+              {isAdminOrManager && <th style={{ padding: '12px 20px' }}>ACTIONS</th>}
             </tr>
           </thead>
           <tbody>
             {tasks.length === 0 ? (
               <tr>
-                <td colSpan={6} style={{ padding: '32px', textAlign: 'center', color: '#9ca3af' }}>
+                <td colSpan={isAdminOrManager ? 6 : 5} style={{ padding: '32px', textAlign: 'center', color: '#9ca3af' }}>
                   No work items found matching your filters.
                 </td>
               </tr>
@@ -483,28 +624,33 @@ export default function App() {
                     </select>
                   </td>
                   <td style={{ padding: '14px 20px' }}>
-                    <span style={{
-                      padding: '4px 10px',
-                      borderRadius: '12px',
-                      fontSize: '12px',
-                      fontWeight: 600,
-                      background: t.priority === 'High' ? '#fee2e2' : t.priority === 'Medium' ? '#fef3c7' : '#f1f5f9',
-                      color: t.priority === 'High' ? '#b91c1c' : t.priority === 'Medium' ? '#b45309' : '#475569'
-                    }}>
+                    <span
+                      style={{
+                        padding: '4px 10px',
+                        borderRadius: '12px',
+                        fontSize: '12px',
+                        fontWeight: 600,
+                        background: t.priority === 'High' ? '#fee2e2' : t.priority === 'Medium' ? '#fef3c7' : '#f1f5f9',
+                        color: t.priority === 'High' ? '#b91c1c' : t.priority === 'Medium' ? '#b45309' : '#475569'
+                      }}
+                    >
                       • {t.priority}
                     </span>
                   </td>
                   <td style={{ padding: '14px 20px', fontSize: '13px', color: '#6b7280' }}>
-                    Oct 26
+                    {t.created_at ? new Date(t.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'Recent'}
                   </td>
-                  <td style={{ padding: '14px 20px' }}>
-                    <button
-                      onClick={() => deleteTask(t.id)}
-                      style={{ padding: '6px 10px', background: '#fee2e2', color: '#dc2626', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
-                    >
-                      🗑
-                    </button>
-                  </td>
+                  {isAdminOrManager && (
+                    <td style={{ padding: '14px 20px' }}>
+                      <button
+                        onClick={() => deleteTask(t.id)}
+                        style={{ padding: '6px 10px', background: '#fee2e2', color: '#dc2626', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
+                        title="Delete work item"
+                      >
+                        🗑
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))
             )}
